@@ -22,18 +22,30 @@ import collections
 import json
 import math
 import os
+import sys
 import random
 import modeling
 import optimization
 import tokenization
 import six
 import tensorflow as tf
+import time
+
+sys.path.append("/home/taejoon1kim/BERT/my_bert")
+
+from downloadParagraph import download, writeJson
+from utils.cacheUtils import cacheExist, writeCache, readCache, getBertCachePath
 
 flags = tf.flags
 
 FLAGS = flags.FLAGS
+ENABLE_QnA = True
 
 ## Required parameters
+flags.DEFINE_string(
+    "query_text", None,
+    "query text")
+
 flags.DEFINE_string(
     "bert_config_file", None,
     "The config json file corresponding to the pre-trained BERT model. "
@@ -192,6 +204,10 @@ class SquadExample(object):
     if self.start_position:
       s += ", is_impossible: %r" % (self.is_impossible)
     return s
+
+  def setQuestion(self,
+                  question_text):
+    self.question_text = question_text
 
 
 class InputFeatures(object):
@@ -632,12 +648,13 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
     tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
+    if ENABLE_QnA == False:
+      for var in tvars:
+        init_string = ""
+        if var.name in initialized_variable_names:
+          init_string = ", *INIT_FROM_CKPT*"
+        tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+                        init_string)
 
     output_spec = None
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -922,6 +939,14 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
   if FLAGS.version_2_with_negative:
     with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
       writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+  
+  if ENABLE_QnA == True:
+    if nbest_json[0]["probability"] > 0.8:
+        FULL_JSON = "{\"1-1\":\"" + nbest_json[0]["text"]  +"\"}"
+    else:
+        FULL_JSON = "{\"1-1\":\"잘 모르겠어요\"}"
+  writeJson(FULL_JSON, os.path.join(FLAGS.output_dir, "predictions.json"))
+  #writeCache(cache, FULL_JSON)
 
 
 def get_final_text(pred_text, orig_text, do_lower_case):
@@ -1123,8 +1148,32 @@ def validate_flags_or_throw(bert_config):
         "(%d) + 3" % (FLAGS.max_seq_length, FLAGS.max_query_length))
 
 
+def getQuery():
+  question_text = FLAGS.query_text
+
+  global Q_TYPE
+  Q_TYPE = download(question_text)
+
+  if "알려줘" in question_text:
+    question_text = question_text[0:question_text.find("알려줘")]
+  elif "보여줘" in question_text:
+    question_text = question_text[0:question_text.find("보여줘")]
+  elif "찾아줘" in question_text:
+    question_text = question_text[0:question_text.find("찾아줘")]
+  elif "뭐야" in question_text:
+    question_text = question_text[0:question_text.find("뭐야")]
+
+  return question_text
+
+
 def main(_):
+  question_text = getQuery()
+  start1 = time.time()
   tf.logging.set_verbosity(tf.logging.INFO)
+  
+  global cache
+  cache = getBertCachePath(question_text)
+  start2 = time.time()
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -1215,68 +1264,83 @@ def main(_):
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
   if FLAGS.do_predict:
-    eval_examples = read_squad_examples(
-        input_file=FLAGS.predict_file, is_training=False)
+    start2 = time.time()
+    while question_text != "exit" and Q_TYPE == 2:
+      eval_examples = read_squad_examples(
+          input_file=FLAGS.predict_file, is_training=False)
 
-    eval_writer = FeatureWriter(
-        filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
-        is_training=False)
-    eval_features = []
+      eval_writer = FeatureWriter(
+          filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
+          is_training=False)
+      eval_features = []
 
-    def append_feature(feature):
-      eval_features.append(feature)
-      eval_writer.process_feature(feature)
+      def append_feature(feature):
+        eval_features.append(feature)
+        eval_writer.process_feature(feature)
 
-    convert_examples_to_features(
-        examples=eval_examples,
-        tokenizer=tokenizer,
-        max_seq_length=FLAGS.max_seq_length,
-        doc_stride=FLAGS.doc_stride,
-        max_query_length=FLAGS.max_query_length,
-        is_training=False,
-        output_fn=append_feature)
-    eval_writer.close()
+      ## question_text 추가
+      eval_examples[-1].setQuestion(question_text)
 
-    tf.logging.info("***** Running predictions *****")
-    tf.logging.info("  Num orig examples = %d", len(eval_examples))
-    tf.logging.info("  Num split examples = %d", len(eval_features))
-    tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+      convert_examples_to_features(
+          examples=eval_examples,
+          tokenizer=tokenizer,
+          max_seq_length=FLAGS.max_seq_length,
+          doc_stride=FLAGS.doc_stride,
+          max_query_length=FLAGS.max_query_length,
+          is_training=False,
+          output_fn=append_feature)
+      eval_writer.close()
 
-    all_results = []
+      if ENABLE_QnA == False:
+        tf.logging.info("***** Running predictions *****")
+        tf.logging.info("  Num orig examples = %d", len(eval_examples))
+        tf.logging.info("  Num split examples = %d", len(eval_features))
+        tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
-    predict_input_fn = input_fn_builder(
-        input_file=eval_writer.filename,
-        seq_length=FLAGS.max_seq_length,
-        is_training=False,
-        drop_remainder=False)
+      all_results = []
 
-    # If running eval on the TPU, you will need to specify the number of
-    # steps.
-    all_results = []
-    for result in estimator.predict(
-        predict_input_fn, yield_single_examples=True):
-      if len(all_results) % 1000 == 0:
-        tf.logging.info("Processing example: %d" % (len(all_results)))
-      unique_id = int(result["unique_ids"])
-      start_logits = [float(x) for x in result["start_logits"].flat]
-      end_logits = [float(x) for x in result["end_logits"].flat]
-      all_results.append(
-          RawResult(
-              unique_id=unique_id,
-              start_logits=start_logits,
-              end_logits=end_logits))
+      predict_input_fn = input_fn_builder(
+          input_file=eval_writer.filename,
+          seq_length=FLAGS.max_seq_length,
+          is_training=False,
+          drop_remainder=False)
 
-    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
-    output_null_log_odds_file = os.path.join(FLAGS.output_dir, "null_odds.json")
+      # If running eval on the TPU, you will need to specify the number of
+      # steps.
+      all_results = []
+      for result in estimator.predict(
+          predict_input_fn, yield_single_examples=True):
+        if len(all_results) % 1000 == 0:
+          tf.logging.info("Processing example: %d" % (len(all_results)))
+        unique_id = int(result["unique_ids"])
+        start_logits = [float(x) for x in result["start_logits"].flat]
+        end_logits = [float(x) for x in result["end_logits"].flat]
+        all_results.append(
+            RawResult(
+                unique_id=unique_id,
+                start_logits=start_logits,
+                end_logits=end_logits))
 
-    write_predictions(eval_examples, eval_features, all_results,
-                      FLAGS.n_best_size, FLAGS.max_answer_length,
-                      FLAGS.do_lower_case, output_prediction_file,
-                      output_nbest_file, output_null_log_odds_file)
+      output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
+      output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
+      output_null_log_odds_file = os.path.join(FLAGS.output_dir, "null_odds.json")
 
+      write_predictions(eval_examples, eval_features, all_results,
+                        FLAGS.n_best_size, FLAGS.max_answer_length,
+                        FLAGS.do_lower_case, output_prediction_file,
+                        output_nbest_file, output_null_log_odds_file)
+      question_text = "exit"
+    if Q_TYPE != 2:
+            FULL_JSON = "{\"1-1\":\"no_bert\"}"
+            writeJson(FULL_JSON, os.path.join(FLAGS.output_dir, "predictions.json"))
+            #writeCache(cache, FULL_JSON)
+  print(f"[BERT Model] load time : {format(start2 - start1, '0.5f')}")
+  print(f"[BERT Model] prediction time : {format(time.time() - start2, '0.5f')}")
+  print(f"[BERT Model] Total time : {format(time.time() - start1, '0.5f')}")
 
 if __name__ == "__main__":
+  if ENABLE_QnA == True:
+    tf.get_logger().disabled = True
   flags.mark_flag_as_required("vocab_file")
   flags.mark_flag_as_required("bert_config_file")
   flags.mark_flag_as_required("output_dir")
