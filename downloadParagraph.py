@@ -3,6 +3,7 @@
 import sys, getopt
 import urllib
 import requests
+import requests_cache
 import re
 import time
 from bs4 import BeautifulSoup
@@ -110,8 +111,10 @@ def download(text):
     global start, Q_TYPE
     init_start = time.time()
     start = time.time()
+    requests_cache.install_cache('download_cache')
 
-    if cacheExist(cache) == False:
+    #if cacheExist(cache) == False:
+    if True:
     
         checkQType(text)
         query_text = preprocessor(text)
@@ -168,7 +171,7 @@ def download(text):
         writeJson(CACHE_RESULT['search_result.json'], BERT_SEARCH_JSON)
         Q_TYPE = CACHE_RESULT['Q_TYPE']
 
-    print("[SEARCH] Total time : ", time.time() - init_start)
+    print(f"[SEARCH] Total time : {format(time.time() - init_start, '0.5f')}")
 
     return Q_TYPE
 
