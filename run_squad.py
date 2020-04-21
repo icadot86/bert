@@ -946,7 +946,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     else:
         FULL_JSON = "{\"1-1\":\"잘 모르겠어요\"}"
   writeJson(FULL_JSON, os.path.join(FLAGS.output_dir, "predictions.json"))
-  #writeCache(cache, FULL_JSON)
+  writeCache(cache, FULL_JSON)
 
 
 def get_final_text(pred_text, orig_text, do_lower_case):
@@ -1175,167 +1175,173 @@ def main(_):
   cache = getBertCachePath(question_text)
   start2 = time.time()
 
-  bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
+  if cacheExist(cache) == False:
+    bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
-  validate_flags_or_throw(bert_config)
+    validate_flags_or_throw(bert_config)
 
-  tf.gfile.MakeDirs(FLAGS.output_dir)
+    tf.gfile.MakeDirs(FLAGS.output_dir)
 
-  tokenizer = tokenization.FullTokenizer(
-      vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
+    tokenizer = tokenization.FullTokenizer(
+        vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
 
-  tpu_cluster_resolver = None
-  if FLAGS.use_tpu and FLAGS.tpu_name:
-    tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
-        FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
+    tpu_cluster_resolver = None
+    if FLAGS.use_tpu and FLAGS.tpu_name:
+      tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
+          FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
-  is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-  run_config = tf.contrib.tpu.RunConfig(
-      cluster=tpu_cluster_resolver,
-      master=FLAGS.master,
-      model_dir=FLAGS.output_dir,
-      save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-      tpu_config=tf.contrib.tpu.TPUConfig(
-          iterations_per_loop=FLAGS.iterations_per_loop,
-          num_shards=FLAGS.num_tpu_cores,
-          per_host_input_for_training=is_per_host))
+    is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
+    run_config = tf.contrib.tpu.RunConfig(
+        cluster=tpu_cluster_resolver,
+        master=FLAGS.master,
+        model_dir=FLAGS.output_dir,
+        save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+        tpu_config=tf.contrib.tpu.TPUConfig(
+            iterations_per_loop=FLAGS.iterations_per_loop,
+            num_shards=FLAGS.num_tpu_cores,
+            per_host_input_for_training=is_per_host))
 
-  train_examples = None
-  num_train_steps = None
-  num_warmup_steps = None
-  if FLAGS.do_train:
-    train_examples = read_squad_examples(
-        input_file=FLAGS.train_file, is_training=True)
-    num_train_steps = int(
-        len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
-    num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
+    train_examples = None
+    num_train_steps = None
+    num_warmup_steps = None
+    if FLAGS.do_train:
+      train_examples = read_squad_examples(
+          input_file=FLAGS.train_file, is_training=True)
+      num_train_steps = int(
+          len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
+      num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
-    # Pre-shuffle the input to avoid having to make a very large shuffle
-    # buffer in in the `input_fn`.
-    rng = random.Random(12345)
-    rng.shuffle(train_examples)
+      # Pre-shuffle the input to avoid having to make a very large shuffle
+      # buffer in in the `input_fn`.
+      rng = random.Random(12345)
+      rng.shuffle(train_examples)
 
-  model_fn = model_fn_builder(
-      bert_config=bert_config,
-      init_checkpoint=FLAGS.init_checkpoint,
-      learning_rate=FLAGS.learning_rate,
-      num_train_steps=num_train_steps,
-      num_warmup_steps=num_warmup_steps,
-      use_tpu=FLAGS.use_tpu,
-      use_one_hot_embeddings=FLAGS.use_tpu)
+    model_fn = model_fn_builder(
+        bert_config=bert_config,
+        init_checkpoint=FLAGS.init_checkpoint,
+        learning_rate=FLAGS.learning_rate,
+        num_train_steps=num_train_steps,
+        num_warmup_steps=num_warmup_steps,
+        use_tpu=FLAGS.use_tpu,
+        use_one_hot_embeddings=FLAGS.use_tpu)
 
-  # If TPU is not available, this will fall back to normal Estimator on CPU
-  # or GPU.
-  estimator = tf.contrib.tpu.TPUEstimator(
-      use_tpu=FLAGS.use_tpu,
-      model_fn=model_fn,
-      config=run_config,
-      train_batch_size=FLAGS.train_batch_size,
-      predict_batch_size=FLAGS.predict_batch_size)
+    # If TPU is not available, this will fall back to normal Estimator on CPU
+    # or GPU.
+    estimator = tf.contrib.tpu.TPUEstimator(
+        use_tpu=FLAGS.use_tpu,
+        model_fn=model_fn,
+        config=run_config,
+        train_batch_size=FLAGS.train_batch_size,
+        predict_batch_size=FLAGS.predict_batch_size)
 
-  if FLAGS.do_train:
-    # We write to a temporary file to avoid storing very large constant tensors
-    # in memory.
-    train_writer = FeatureWriter(
-        filename=os.path.join(FLAGS.output_dir, "train.tf_record"),
-        is_training=True)
-    convert_examples_to_features(
-        examples=train_examples,
-        tokenizer=tokenizer,
-        max_seq_length=FLAGS.max_seq_length,
-        doc_stride=FLAGS.doc_stride,
-        max_query_length=FLAGS.max_query_length,
-        is_training=True,
-        output_fn=train_writer.process_feature)
-    train_writer.close()
-
-    tf.logging.info("***** Running training *****")
-    tf.logging.info("  Num orig examples = %d", len(train_examples))
-    tf.logging.info("  Num split examples = %d", train_writer.num_features)
-    tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
-    tf.logging.info("  Num steps = %d", num_train_steps)
-    del train_examples
-
-    train_input_fn = input_fn_builder(
-        input_file=train_writer.filename,
-        seq_length=FLAGS.max_seq_length,
-        is_training=True,
-        drop_remainder=True)
-    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
-
-  if FLAGS.do_predict:
-    start2 = time.time()
-    while question_text != "exit" and Q_TYPE == 2:
-      eval_examples = read_squad_examples(
-          input_file=FLAGS.predict_file, is_training=False)
-
-      eval_writer = FeatureWriter(
-          filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
-          is_training=False)
-      eval_features = []
-
-      def append_feature(feature):
-        eval_features.append(feature)
-        eval_writer.process_feature(feature)
-
-      ## question_text 추가
-      eval_examples[-1].setQuestion(question_text)
-
+    if FLAGS.do_train:
+      # We write to a temporary file to avoid storing very large constant tensors
+      # in memory.
+      train_writer = FeatureWriter(
+          filename=os.path.join(FLAGS.output_dir, "train.tf_record"),
+          is_training=True)
       convert_examples_to_features(
-          examples=eval_examples,
+          examples=train_examples,
           tokenizer=tokenizer,
           max_seq_length=FLAGS.max_seq_length,
           doc_stride=FLAGS.doc_stride,
           max_query_length=FLAGS.max_query_length,
-          is_training=False,
-          output_fn=append_feature)
-      eval_writer.close()
+          is_training=True,
+          output_fn=train_writer.process_feature)
+      train_writer.close()
 
-      if ENABLE_QnA == False:
-        tf.logging.info("***** Running predictions *****")
-        tf.logging.info("  Num orig examples = %d", len(eval_examples))
-        tf.logging.info("  Num split examples = %d", len(eval_features))
-        tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+      tf.logging.info("***** Running training *****")
+      tf.logging.info("  Num orig examples = %d", len(train_examples))
+      tf.logging.info("  Num split examples = %d", train_writer.num_features)
+      tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+      tf.logging.info("  Num steps = %d", num_train_steps)
+      del train_examples
 
-      all_results = []
-
-      predict_input_fn = input_fn_builder(
-          input_file=eval_writer.filename,
+      train_input_fn = input_fn_builder(
+          input_file=train_writer.filename,
           seq_length=FLAGS.max_seq_length,
-          is_training=False,
-          drop_remainder=False)
+          is_training=True,
+          drop_remainder=True)
+      estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
-      # If running eval on the TPU, you will need to specify the number of
-      # steps.
-      all_results = []
-      for result in estimator.predict(
-          predict_input_fn, yield_single_examples=True):
-        if len(all_results) % 1000 == 0:
-          tf.logging.info("Processing example: %d" % (len(all_results)))
-        unique_id = int(result["unique_ids"])
-        start_logits = [float(x) for x in result["start_logits"].flat]
-        end_logits = [float(x) for x in result["end_logits"].flat]
-        all_results.append(
-            RawResult(
-                unique_id=unique_id,
-                start_logits=start_logits,
-                end_logits=end_logits))
+    if FLAGS.do_predict:
+      start2 = time.time()
+      while question_text != "exit" and Q_TYPE == 2:
+        eval_examples = read_squad_examples(
+            input_file=FLAGS.predict_file, is_training=False)
 
-      output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-      output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
-      output_null_log_odds_file = os.path.join(FLAGS.output_dir, "null_odds.json")
+        eval_writer = FeatureWriter(
+            filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
+            is_training=False)
+        eval_features = []
 
-      write_predictions(eval_examples, eval_features, all_results,
-                        FLAGS.n_best_size, FLAGS.max_answer_length,
-                        FLAGS.do_lower_case, output_prediction_file,
-                        output_nbest_file, output_null_log_odds_file)
-      question_text = "exit"
-    if Q_TYPE != 2:
+        def append_feature(feature):
+          eval_features.append(feature)
+          eval_writer.process_feature(feature)
+
+        ## question_text 추가
+        eval_examples[-1].setQuestion(question_text)
+
+        convert_examples_to_features(
+            examples=eval_examples,
+            tokenizer=tokenizer,
+            max_seq_length=FLAGS.max_seq_length,
+            doc_stride=FLAGS.doc_stride,
+            max_query_length=FLAGS.max_query_length,
+            is_training=False,
+            output_fn=append_feature)
+        eval_writer.close()
+
+        if ENABLE_QnA == False:
+          tf.logging.info("***** Running predictions *****")
+          tf.logging.info("  Num orig examples = %d", len(eval_examples))
+          tf.logging.info("  Num split examples = %d", len(eval_features))
+          tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+
+        all_results = []
+
+        predict_input_fn = input_fn_builder(
+            input_file=eval_writer.filename,
+            seq_length=FLAGS.max_seq_length,
+            is_training=False,
+            drop_remainder=False)
+
+        # If running eval on the TPU, you will need to specify the number of
+        # steps.
+        all_results = []
+        for result in estimator.predict(
+            predict_input_fn, yield_single_examples=True):
+          if len(all_results) % 1000 == 0:
+            tf.logging.info("Processing example: %d" % (len(all_results)))
+          unique_id = int(result["unique_ids"])
+          start_logits = [float(x) for x in result["start_logits"].flat]
+          end_logits = [float(x) for x in result["end_logits"].flat]
+          all_results.append(
+              RawResult(
+                  unique_id=unique_id,
+                  start_logits=start_logits,
+                  end_logits=end_logits))
+
+        output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
+        output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
+        output_null_log_odds_file = os.path.join(FLAGS.output_dir, "null_odds.json")
+
+        write_predictions(eval_examples, eval_features, all_results,
+                          FLAGS.n_best_size, FLAGS.max_answer_length,
+                          FLAGS.do_lower_case, output_prediction_file,
+                          output_nbest_file, output_null_log_odds_file)
+        question_text = "exit"
+      if Q_TYPE != 2:
             FULL_JSON = "{\"1-1\":\"no_bert\"}"
             writeJson(FULL_JSON, os.path.join(FLAGS.output_dir, "predictions.json"))
-            #writeCache(cache, FULL_JSON)
-  print(f"[BERT Model] load time : {format(start2 - start1, '0.5f')}")
-  print(f"[BERT Model] prediction time : {format(time.time() - start2, '0.5f')}")
+            writeCache(cache, FULL_JSON)
+    print(f"[BERT Model] load time : {format(start2 - start1, '0.5f')}")
+    print(f"[BERT Model] prediction time : {format(time.time() - start2, '0.5f')}")
+  
+  else:
+    FULL_JSON = readCache(cache)
+    writeJson(FULL_JSON, os.path.join(FLAGS.output_dir, "predictions.json"))
+
   print(f"[BERT Model] Total time : {format(time.time() - start1, '0.5f')}")
 
 if __name__ == "__main__":
