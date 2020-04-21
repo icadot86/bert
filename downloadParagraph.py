@@ -76,6 +76,7 @@ def downloadURL(URL):
     resp = requests.get(URL, headers=headers)
     #resp = s.get(URL)
 
+    results = [{"title" : f"{NO_RESULT}", "link" : f"{NO_RESULT}"}]
     if resp.status_code == 200:
         soup = BeautifulSoup(resp.content, "lxml")
 
@@ -103,6 +104,8 @@ def downloadURL(URL):
                     break
         SEARCH_RESULT['FIRST']['title'] = results[0].get('title')
         SEARCH_RESULT['FIRST']['link'] = results[0].get('link')
+    else:
+        SEARCH_RESULT['FIRST']['title'] = f"resp.status_code {resp.status_code}"
     return results
     
 def download(text):
