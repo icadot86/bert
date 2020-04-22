@@ -77,6 +77,7 @@ def downloadURL(URL):
     #resp = s.get(URL)
 
     results = [{"title" : f"{NO_RESULT}", "link" : f"{NO_RESULT}"}]
+    print(resp.status_code)
     if resp.status_code == 200:
         soup = BeautifulSoup(resp.content, "lxml")
 
@@ -135,6 +136,8 @@ def download(text):
         printTime("1st Search Time")
 
 
+        pWithoutTag = f"{NO_RESULT}"
+        imgTag = f"{NO_RESULT}"
         ## 2nd SEARCH
         if SEARCH_RESULT['WIKI']['title'] == NO_RESULT and Q_TYPE > 2:
             URL = f"https://google.com/search?q={query} site:wikipedia.org"
