@@ -114,7 +114,7 @@ def download(text):
     global start, Q_TYPE
     init_start = time.time()
     start = time.time()
-    requests_cache.install_cache('download_cache')
+    requests_cache.install_cache('/home/taejoon1kim/BERT/my_bert/download_cache')
 
     #if cacheExist(cache) == False:
     if True:
