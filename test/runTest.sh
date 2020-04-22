@@ -12,7 +12,7 @@ do
 		port=$line
 	else
 		let j=1
-		while [ $j -lt 3 ]
+		while [ $j -lt 4 ]
 		do
 			ssh -p $port root@$ip "luna-send -n 1 -f luna://com.webos.service.voiceconductor/recognizeIntentByText '{\"text\":\"${line}\", \"runVoiceUi\":true, \"language\":\"ko-KR\"}'"
 			SEARCH_TIME=$(grep '\[SEARCH\] Total' /home/taejoon1kim/BERT/my_bert/output/test_log.txt)
@@ -29,6 +29,7 @@ do
 			PARAGRAPH=$(jq '.data[0].paragraphs[0].context' /home/taejoon1kim/BERT/my_bert/output/test_input.json)
 			echo -e "$line\t${SEARCH_TIME: (-7)}\t${PREDICTION_TIME: (-7)}\t${PREDICTION//\"/}\t${Q_TYPE//\"/}\t${PARAGRAPH//\"/}\t${GOOGLE_T//\"/}\t${GOOGLE_L//\"/}\t${WIKI_T//\"/}\t${WIKI_L//\"/}\t${YOUTUBE_T//\"/}\t${YOUTUBE_L//\"/}\t${IMG_SRC//\"/}" >> ${RESULT_FILE}
 			let j++
+			sleep 3s
 		done
 	fi
 	let i++
